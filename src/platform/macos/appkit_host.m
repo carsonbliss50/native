@@ -1419,7 +1419,16 @@ static const uint32_t NativeSdkWidgetPressActionFlags =
          [attribute isEqualToString:NSAccessibilitySelectedTextRangesAttribute])) {
         return (self.actionFlags & NATIVE_SDK_APPKIT_WIDGET_ACTION_SET_SELECTION) != 0;
     }
-    return [super accessibilityIsAttributeSettable:attribute];
+    if (self.accessibilityEnabled && [attribute isEqualToString:NSAccessibilityFocusedAttribute]) {
+        return (self.actionFlags & NATIVE_SDK_APPKIT_WIDGET_ACTION_FOCUS) != 0;
+    }
+    /* NSAccessibilityElement does not implement this legacy selector on
+     * newer AppKit releases. Falling through to super raises an
+     * unrecognized-selector exception while assigning AXParent during the
+     * first semantics publish, before the app can present a frame. This
+     * element owns every writable attribute it exposes, so the honest
+     * fallback for all remaining attributes is not settable. */
+    return NO;
 }
 
 - (void)accessibilitySetValue:(id)value forAttribute:(NSAccessibilityAttributeName)attribute {
