@@ -173,7 +173,7 @@ test "HTML and JSX highlighting distinguishes tags attributes expressions and st
     try testing.expectEqual(code_model.Language.javascript, code_model.languageFromName("mjs"));
     try testing.expectEqual(code_model.Language.yaml, code_model.languageFromName("yaml"));
     try testing.expectEqual(code_model.Language.yaml, code_model.languageFromName("yml"));
-    try testing.expectEqual(code_model.Language.markdown, code_model.languageFromName("md"));
+    try testing.expectEqual(code_model.Language.clive_review, code_model.languageFromName("md"));
     try testing.expectEqual(canvas.TextSpanColor.syntax_literal, spanWithFragment(spans, "Accordion").?.color.?);
     try testing.expectEqual(canvas.TextSpanColor.syntax_function, spanWithFragment(spans, "defaultValue").?.color.?);
     try testing.expectEqual(canvas.TextSpanColor.syntax_literal, spanWithFragment(spans, "\"item-1\"").?.color.?);
@@ -326,6 +326,39 @@ test "Markdown highlighting distinguishes structure links code and comments" {
     try testing.expectEqual(canvas.TextSpanColor.syntax_comment, spanWithFragment(spans, "<!-- note -->").?.color.?);
     try testing.expectEqual(canvas.TextSpanColor.syntax_constant, spanWithFragment(spans, "zig").?.color.?);
     try testing.expectEqual(canvas.TextSpanColor.syntax_literal, spanWithFragment(spans, "const value").?.color.?);
+}
+
+test "Clive document highlighting is proportional and colors review issues in place" {
+    const source = "I think the report was written very slowly in order to facilitate numerous updates.";
+    var storage: [text_spans.max_text_spans_per_paragraph]canvas.TextSpan = undefined;
+    const spans = code_model.highlight(source, .clive_review, &storage);
+
+    for (spans) |span| try testing.expect(!span.monospace);
+    try testing.expectEqual(canvas.TextSpanColor.success, spanWithFragment(spans, "was").?.color.?);
+    try testing.expectEqual(canvas.TextSpanColor.success, spanWithFragment(spans, "written").?.color.?);
+    try testing.expectEqual(canvas.TextSpanColor.syntax_constant, spanWithFragment(spans, "very").?.color.?);
+    try testing.expectEqual(canvas.TextSpanColor.syntax_constant, spanWithFragment(spans, "slowly").?.color.?);
+    try testing.expectEqual(canvas.TextSpanColor.syntax_function, spanWithFragment(spans, "numerous").?.color.?);
+    try testing.expectEqual(canvas.TextSpanColor.syntax_constant, spanWithFragment(spans, "I think").?.color.?);
+    try testing.expectEqual(canvas.TextSpanColor.syntax_function, spanWithFragment(spans, "in order to").?.color.?);
+}
+
+test "Clive Markdown aliases select normal and review document modes" {
+    try testing.expectEqual(code_model.Language.clive, code_model.languageFromName("markdown"));
+    try testing.expectEqual(code_model.Language.clive_review, code_model.languageFromName("md"));
+    try testing.expect(code_model.isLanguageName("clive-review"));
+}
+
+test "Clive active prose keeps inline Markdown visually formatted" {
+    const source = "This is **bold**, _italic_, ~~deleted~~, and `code`.";
+    var storage: [text_spans.max_text_spans_per_paragraph]canvas.TextSpan = undefined;
+    const spans = code_model.highlight(source, .clive, &storage);
+
+    try testing.expectEqual(canvas.TextSpanColor.background, spanWithFragment(spans, "**").?.color.?);
+    try testing.expectEqual(canvas.TextSpanWeight.bold, spanWithFragment(spans, "bold").?.weight);
+    try testing.expect(spanWithFragment(spans, "italic").?.italic);
+    try testing.expect(spanWithFragment(spans, "deleted").?.strikethrough);
+    try testing.expect(spanWithFragment(spans, "`code`").?.monospace);
 }
 
 test "nested JSX attribute tags restore the enclosing opening tag" {

@@ -2411,6 +2411,10 @@ pub fn Ui(comptime Msg: type) type {
                 if (diff_lines) |lines| editor.widget.setCodeDiffLines(lines);
                 editor.widget.code_editor = true;
                 editor.widget.code_language = options.language;
+                // Clive mounts one editor only after the user selects a
+                // rendered block. Put the caret in that new editor without
+                // requiring a second click.
+                editor.widget.autofocus = code_model.isProseLanguage(options.language);
                 editor.widget.layout.clip_content = true;
                 return editor;
             }

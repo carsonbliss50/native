@@ -6,6 +6,7 @@ const token_model = @import("tokens.zig");
 const widget_model = @import("widgets.zig");
 const widget_access = @import("widget_access.zig");
 const widget_metrics = @import("widget_metrics.zig");
+const code_model = @import("code.zig");
 const text_measure_cache = @import("text_measure_cache.zig");
 
 const FontId = @import("root.zig").FontId;
@@ -473,7 +474,10 @@ pub fn widgetTextInputInset(widget: Widget, tokens: DesignTokens) f32 {
 }
 
 fn widgetTextInputFontId(widget: Widget, tokens: DesignTokens) FontId {
-    return if (widget.code_editor) tokens.typography.mono_font_id else tokens.typography.font_id;
+    return if (widget.code_editor and !code_model.isProseLanguage(widget.code_language))
+        tokens.typography.mono_font_id
+    else
+        tokens.typography.font_id;
 }
 
 fn codeContentWidthCacheCurrent(widget: Widget, font_id: FontId, text_size: f32) bool {

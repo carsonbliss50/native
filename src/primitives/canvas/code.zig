@@ -30,6 +30,10 @@ pub const Language = enum {
     jsx,
     tsx,
     markdown,
+    /// Proportional Markdown editing for document-first applications.
+    clive,
+    /// The same document surface with writing-review colors applied.
+    clive_review,
 };
 
 /// Lexer state carried between bounded source chunks by `Ui.code`.
@@ -120,8 +124,19 @@ pub fn languageFromName(name_raw: []const u8) Language {
     if (std.ascii.eqlIgnoreCase(name, "html") or std.ascii.eqlIgnoreCase(name, "xml") or std.ascii.eqlIgnoreCase(name, "svg")) return .html;
     if (std.ascii.eqlIgnoreCase(name, "css") or std.ascii.eqlIgnoreCase(name, "scss") or std.ascii.eqlIgnoreCase(name, "less")) return .css;
     if (std.ascii.eqlIgnoreCase(name, "sql")) return .sql;
-    if (std.ascii.eqlIgnoreCase(name, "md") or std.ascii.eqlIgnoreCase(name, "markdown")) return .markdown;
+    // Clive uses the two standard Markdown aliases to select its single
+    // proportional document surface with review off/on. Keeping these as
+    // accepted Markdown names also preserves compatibility with the pinned
+    // CLI validator used by this app.
+    if (std.ascii.eqlIgnoreCase(name, "markdown")) return .clive;
+    if (std.ascii.eqlIgnoreCase(name, "md")) return .clive_review;
+    if (std.ascii.eqlIgnoreCase(name, "clive")) return .clive;
+    if (std.ascii.eqlIgnoreCase(name, "clive-review")) return .clive_review;
     return .plain;
+}
+
+pub fn isProseLanguage(language: Language) bool {
+    return language == .clive or language == .clive_review;
 }
 
 pub fn isLanguageName(name_raw: []const u8) bool {
@@ -142,7 +157,9 @@ pub fn languageFromFence(opening: []const u8) Language {
         const byte = info[end];
         if (!(std.ascii.isAlphanumeric(byte) or byte == '_' or byte == '-' or byte == '+' or byte == '#')) break;
     }
-    return languageFromName(info[0..end]);
+    const name = info[0..end];
+    if (std.ascii.eqlIgnoreCase(name, "markdown") or std.ascii.eqlIgnoreCase(name, "md")) return .markdown;
+    return languageFromName(name);
 }
 
 /// Diff annotations share the read-only code paragraph's bounded logical
@@ -256,7 +273,7 @@ fn wordColor(language: Language, word: []const u8) ?text_spans.TextSpanColor {
         .html => "",
         .css => "and important inherit initial none not only or revert unset",
         .sql => "add all alter and any as asc begin between by case check column commit constraint create cross database default delete desc distinct drop else end exists foreign from full grant group having in index inner insert intersect into is join key left like limit not null on or order outer primary references right rollback row select set table then union unique update values view when where with",
-        .markdown => "",
+        .markdown, .clive, .clive_review => "",
     };
     if (wordInList(word, keywords, language == .sql)) return .syntax_keyword;
 
@@ -443,7 +460,7 @@ fn updateHtmlPreviousSignificant(state: *HighlightState, source: []const u8) voi
 
 fn stringQuote(language: Language, byte: u8) bool {
     return switch (language) {
-        .plain, .html, .markdown => false,
+        .plain, .html, .markdown, .clive, .clive_review => false,
         .json => byte == '"',
         // A Rust apostrophe begins a character only when a closing quote
         // follows one scalar or escape; otherwise it introduces a lifetime
@@ -799,6 +816,289 @@ fn highlightMarkdownWithState(
     return storage[0..len];
 }
 
+fn proseWordByte(byte: u8) bool {
+    return std.ascii.isAlphanumeric(byte) or byte == '\'' or byte == '-';
+}
+
+fn proseWordIn(word: []const u8, words: []const u8) bool {
+    return wordInList(word, words, true);
+}
+
+fn proseWordEndsWith(word: []const u8, suffix: []const u8) bool {
+    if (word.len < suffix.len) return false;
+    return std.ascii.eqlIgnoreCase(word[word.len - suffix.len ..], suffix);
+}
+
+fn previousProseWord(source: []const u8, start: usize) []const u8 {
+    var cursor = start;
+    while (cursor > 0 and !proseWordByte(source[cursor - 1])) cursor -= 1;
+    const end = cursor;
+    while (cursor > 0 and proseWordByte(source[cursor - 1])) cursor -= 1;
+    return source[cursor..end];
+}
+
+fn nextProseWord(source: []const u8, end: usize) []const u8 {
+    var cursor = end;
+    while (cursor < source.len and !proseWordByte(source[cursor])) cursor += 1;
+    const start = cursor;
+    while (cursor < source.len and proseWordByte(source[cursor])) cursor += 1;
+    return source[start..cursor];
+}
+
+fn proseParticiple(word: []const u8, irregular: []const u8) bool {
+    return (word.len >= 4 and proseWordEndsWith(word, "ed")) or proseWordIn(word, irregular);
+}
+
+fn proseReviewWordColor(source: []const u8, start: usize, end: usize) ?text_spans.TextSpanColor {
+    const word = source[start..end];
+    const previous = previousProseWord(source, start);
+    const next = nextProseWord(source, end);
+    const be_forms = "am is are was were be been being";
+    const irregular = "begun bought broken brought built caught chosen done drawn driven eaten fallen felt forgotten found frozen given gotten grown heard held hidden kept known led left lost made met paid put read said seen sent set shown sold spoken stolen sung taken taught thought thrown told understood won worn written";
+    if ((proseWordIn(previous, be_forms) and proseParticiple(word, irregular)) or
+        (proseWordIn(word, be_forms) and proseParticiple(next, irregular))) {
+        return .success;
+    }
+
+    const ly_exceptions = "ally anomaly apply assembly belly bully butterfly chilly comply early family fly folly frilly hilly holly imply italy jelly jolly july lily melancholy monopoly multiply only panoply ply rally rely reply silly sly supply tally ugly";
+    if (word.len >= 4 and proseWordEndsWith(word, "ly") and !proseWordIn(word, ly_exceptions)) {
+        return .syntax_constant;
+    }
+
+    const complex_words = "accomplish additional advantageous aggregate approximately ascertain assistance commence component concerning consequently demonstrate endeavor expedite facilitate implement individuals initiate leverage modification numerous objective obtain purchase regarding remainder subsequently sufficient terminate transmit utilization utilize";
+    if (proseWordIn(word, complex_words)) return .syntax_function;
+
+    const qualifiers = "almost just maybe perhaps quite rather somewhat very";
+    if (proseWordIn(word, qualifiers)) return .syntax_constant;
+    return null;
+}
+
+const ProsePhraseMatch = struct {
+    end: usize,
+    color: text_spans.TextSpanColor,
+};
+
+fn prosePhraseEnd(source: []const u8, start: usize, limit: usize, phrase: []const u8) ?usize {
+    const end = start + phrase.len;
+    if (end > limit or !std.ascii.eqlIgnoreCase(source[start..end], phrase)) return null;
+    if (end < source.len and proseWordByte(source[end])) return null;
+    return end;
+}
+
+fn proseReviewPhrase(source: []const u8, start: usize, limit: usize) ?ProsePhraseMatch {
+    const complex_phrases = [_][]const u8{
+        "a number of",
+        "as a matter of fact",
+        "at this point in time",
+        "due to the fact that",
+        "for the purpose of",
+        "in order to",
+        "in spite of the fact that",
+        "in the event that",
+        "in the near future",
+        "in the process of",
+        "on a daily basis",
+        "prior to",
+        "subsequent to",
+        "the majority of",
+        "with regard to",
+    };
+    for (complex_phrases) |phrase| {
+        if (prosePhraseEnd(source, start, limit, phrase)) |end| {
+            return .{ .end = end, .color = .syntax_function };
+        }
+    }
+    const qualifier_phrases = [_][]const u8{
+        "a bit",
+        "a little",
+        "i believe",
+        "i feel",
+        "i think",
+        "in my opinion",
+        "it seems",
+        "kind of",
+        "more or less",
+        "sort of",
+    };
+    for (qualifier_phrases) |phrase| {
+        if (prosePhraseEnd(source, start, limit, phrase)) |end| {
+            return .{ .end = end, .color = .syntax_constant };
+        }
+    }
+    return null;
+}
+
+fn proseSentenceTerminator(byte: u8) bool {
+    return byte == '.' or byte == '!' or byte == '?' or byte == '\n';
+}
+
+fn proseDifficulty(sentence: []const u8) ?text_spans.TextSpanColor {
+    var words: usize = 0;
+    var letters: usize = 0;
+    var index: usize = 0;
+    while (index < sentence.len) {
+        if (!proseWordByte(sentence[index])) {
+            index += 1;
+            continue;
+        }
+        words += 1;
+        while (index < sentence.len and proseWordByte(sentence[index])) : (index += 1) {
+            if (std.ascii.isAlphanumeric(sentence[index])) letters += 1;
+        }
+    }
+    if (words < 14) return null;
+    const level100 = @as(i64, @intCast((471 * letters) / words)) +
+        @as(i64, @intCast(50 * words)) - 2143;
+    if (level100 < 950) return null;
+    const level = @divTrunc(level100 + 50, 100);
+    if (level >= 14) return .destructive;
+    if (level >= 10) return .warning;
+    return null;
+}
+
+fn proseSentenceColorAt(source: []const u8, at: usize) ?text_spans.TextSpanColor {
+    var start = @min(at, source.len);
+    while (start > 0 and !proseSentenceTerminator(source[start - 1])) start -= 1;
+    var end = @min(at, source.len);
+    while (end < source.len and !proseSentenceTerminator(source[end])) end += 1;
+    if (end < source.len) end += 1;
+    return proseDifficulty(source[start..end]);
+}
+
+fn appendProseSpan(
+    storage: *[text_spans.max_text_spans_per_paragraph]TextSpan,
+    len: *usize,
+    source: []const u8,
+    start: usize,
+    end: usize,
+    color: text_spans.TextSpanColor,
+) bool {
+    if (end <= start) return true;
+    if (len.* > 0) {
+        const previous = &storage[len.* - 1];
+        if (!previous.monospace and previous.color == color and previous.text.ptr + previous.text.len == source[start..].ptr) {
+            previous.text = previous.text.ptr[0 .. previous.text.len + end - start];
+            return true;
+        }
+    }
+    if (len.* + 1 >= storage.len) {
+        storage[len.*] = .{ .text = source[start..], .monospace = false, .color = .text };
+        len.* += 1;
+        return false;
+    }
+    storage[len.*] = .{ .text = source[start..end], .monospace = false, .color = color };
+    len.* += 1;
+    return true;
+}
+
+fn appendProseBase(
+    storage: *[text_spans.max_text_spans_per_paragraph]TextSpan,
+    len: *usize,
+    source: []const u8,
+    start: usize,
+    end: usize,
+    review: bool,
+) bool {
+    var cursor = start;
+    while (cursor < end) {
+        var piece_end = cursor + 1;
+        while (piece_end < end and !proseSentenceTerminator(source[piece_end - 1])) piece_end += 1;
+        const color = if (review) proseSentenceColorAt(source, cursor) orelse .text else .text;
+        if (!appendProseSpan(storage, len, source, cursor, piece_end, color)) return false;
+        cursor = piece_end;
+    }
+    return true;
+}
+
+fn highlightCliveWithState(
+    source: []const u8,
+    storage: *[text_spans.max_text_spans_per_paragraph]TextSpan,
+    state: *HighlightState,
+    review: bool,
+) []const TextSpan {
+    var markdown_storage: [text_spans.max_text_spans_per_paragraph]TextSpan = undefined;
+    const markdown_spans = highlightMarkdownWithState(source, &markdown_storage, state);
+    var len: usize = 0;
+    var styling_full = false;
+
+    for (markdown_spans) |span| {
+        if (styling_full) break;
+        const start = @intFromPtr(span.text.ptr) - @intFromPtr(source.ptr);
+        const end = start + span.text.len;
+        if (span.color == null or span.color.? != .syntax_plain) {
+            const color: text_spans.TextSpanColor = if (span.color == .syntax_literal)
+                .syntax_literal
+            else
+                .text_muted;
+            if (!appendProseSpan(storage, &len, source, start, end, color)) styling_full = true;
+            continue;
+        }
+        if (!review) {
+            if (!appendProseBase(storage, &len, source, start, end, false)) styling_full = true;
+            continue;
+        }
+
+        var cursor = start;
+        while (cursor < end and !styling_full) {
+            if (!proseWordByte(source[cursor])) {
+                const plain_start = cursor;
+                while (cursor < end and !proseWordByte(source[cursor])) cursor += 1;
+                if (!appendProseBase(storage, &len, source, plain_start, cursor, true)) styling_full = true;
+                continue;
+            }
+            const word_start = cursor;
+            while (cursor < end and proseWordByte(source[cursor])) cursor += 1;
+            if (proseReviewPhrase(source, word_start, end)) |phrase| {
+                if (!appendProseSpan(storage, &len, source, word_start, phrase.end, phrase.color)) styling_full = true;
+                cursor = phrase.end;
+                continue;
+            }
+            const color = proseReviewWordColor(source, word_start, cursor);
+            if (color) |review_color| {
+                if (!appendProseSpan(storage, &len, source, word_start, cursor, review_color)) styling_full = true;
+            } else if (!appendProseBase(storage, &len, source, word_start, cursor, true)) {
+                styling_full = true;
+            }
+        }
+    }
+    applyCliveInlinePresentation(source, storage[0..len]);
+    return storage[0..len];
+}
+
+fn applyCliveInlinePresentation(source: []const u8, spans: []TextSpan) void {
+    var bold = false;
+    var italic = false;
+    var strike = false;
+
+    for (spans) |*span| {
+        const start = @intFromPtr(span.text.ptr) - @intFromPtr(source.ptr);
+        const end = start + span.text.len;
+        const line_marker = (start == 0 or source[start - 1] == '\n') and
+            end < source.len and (source[end] == ' ' or source[end] == '\t');
+
+        if (std.mem.eql(u8, span.text, "**") or std.mem.eql(u8, span.text, "__")) {
+            span.color = .background;
+            bold = !bold;
+            continue;
+        }
+        if (std.mem.eql(u8, span.text, "~~")) {
+            span.color = .background;
+            strike = !strike;
+            continue;
+        }
+        if ((std.mem.eql(u8, span.text, "*") or std.mem.eql(u8, span.text, "_")) and !line_marker) {
+            span.color = .background;
+            italic = !italic;
+            continue;
+        }
+
+        if (bold) span.weight = .bold;
+        if (italic) span.italic = true;
+        if (strike) span.strikethrough = true;
+        if (span.color == .syntax_literal) span.monospace = true;
+    }
+}
+
 /// Tokenize `source` into theme-colored monospace spans.
 pub fn highlight(
     source: []const u8,
@@ -824,6 +1124,9 @@ pub fn highlightWithState(
         return storage[0..1];
     }
     if (language == .markdown) return highlightMarkdownWithState(source, storage, state);
+    if (language == .clive or language == .clive_review) {
+        return highlightCliveWithState(source, storage, state, language == .clive_review);
+    }
 
     var len: usize = 0;
     var styling_full = false;

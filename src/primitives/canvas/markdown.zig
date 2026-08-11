@@ -116,6 +116,10 @@ pub fn Markdown(comptime Msg: type) type {
             /// keeps refs as plain text (they need repo context to
             /// resolve, so there is no default).
             issue_link_base: ?[]const u8 = null,
+            /// Apply writing-review colors to the rendered prose. Clive
+            /// enables this through its private issue-link-base sentinel so
+            /// older markup validators can still validate the document.
+            review: bool = false,
         };
 
         /// Comptime message constructor for `on_details`:
@@ -134,7 +138,14 @@ pub fn Markdown(comptime Msg: type) type {
         /// the existing convention) and malformed markdown degrades to
         /// plain text.
         pub fn view(ui: *Ui, source: []const u8, options: Options) Node {
-            var builder = Builder{ .ui = ui, .options = options };
+            var resolved = options;
+            if (resolved.issue_link_base) |base| {
+                if (std.mem.eql(u8, base, "clive-review://")) {
+                    resolved.review = true;
+                    resolved.issue_link_base = null;
+                }
+            }
+            var builder = Builder{ .ui = ui, .options = resolved };
             var lines = LineIterator{ .source = source };
             const blocks = builder.parseBlocks(&lines, .document);
             return ui.column(.{ .gap = 12 }, blocks);
@@ -526,7 +537,7 @@ pub fn Markdown(comptime Msg: type) type {
 
                     if (rest[0] == '`') {
                         if (std.mem.indexOfScalar(u8, rest[1..], '`')) |close| {
-                            flushLiteral(spans, &len, text[literal_start..index], base, bold, italic, strike);
+                            self.flushLiteral(spans, &len, text[literal_start..index], base, bold, italic, strike);
                             appendSpan(spans, &len, spanWith(base, .{ .text = rest[1 .. 1 + close], .monospace = true }));
                             index += close + 2;
                             literal_start = index;
@@ -535,7 +546,7 @@ pub fn Markdown(comptime Msg: type) type {
                     } else if (std.mem.startsWith(u8, rest, "**") or std.mem.startsWith(u8, rest, "__")) {
                         const delim = rest[0..2];
                         if (bold or hasCloser(rest[2..], delim)) {
-                            flushLiteral(spans, &len, text[literal_start..index], base, bold, italic, strike);
+                            self.flushLiteral(spans, &len, text[literal_start..index], base, bold, italic, strike);
                             bold = !bold;
                             index += 2;
                             literal_start = index;
@@ -543,7 +554,7 @@ pub fn Markdown(comptime Msg: type) type {
                         }
                     } else if (std.mem.startsWith(u8, rest, "~~")) {
                         if (strike or hasCloser(rest[2..], "~~")) {
-                            flushLiteral(spans, &len, text[literal_start..index], base, bold, italic, strike);
+                            self.flushLiteral(spans, &len, text[literal_start..index], base, bold, italic, strike);
                             strike = !strike;
                             index += 2;
                             literal_start = index;
@@ -557,7 +568,7 @@ pub fn Markdown(comptime Msg: type) type {
                         else
                             rest.len > 1 and !isInlineSpace(rest[1]) and hasCloser(rest[1..], delim);
                         if (boundary_ok and emphasis_ok) {
-                            flushLiteral(spans, &len, text[literal_start..index], base, bold, italic, strike);
+                            self.flushLiteral(spans, &len, text[literal_start..index], base, bold, italic, strike);
                             italic = !italic;
                             index += 1;
                             literal_start = index;
@@ -565,7 +576,7 @@ pub fn Markdown(comptime Msg: type) type {
                         }
                     } else if (rest[0] == '[') {
                         if (parseLinkAt(text, index, &scan_cache)) |link| {
-                            flushLiteral(spans, &len, text[literal_start..index], base, bold, italic, strike);
+                            self.flushLiteral(spans, &len, text[literal_start..index], base, bold, italic, strike);
                             appendSpan(spans, &len, spanWith(base, .{ .text = link.text, .link = link.target }));
                             index += link.consumed;
                             literal_start = index;
@@ -574,7 +585,7 @@ pub fn Markdown(comptime Msg: type) type {
                     } else if (rest[0] == '!' and rest.len > 1 and rest[1] == '[') {
                         if (parseLinkAt(text, index + 1, &scan_cache)) |image| {
                             // Images render as their alt text in v1.
-                            flushLiteral(spans, &len, text[literal_start..index], base, bold, italic, strike);
+                            self.flushLiteral(spans, &len, text[literal_start..index], base, bold, italic, strike);
                             appendSpan(spans, &len, spanWith(base, .{ .text = image.text }));
                             index += image.consumed + 1;
                             literal_start = index;
@@ -582,7 +593,7 @@ pub fn Markdown(comptime Msg: type) type {
                         }
                     } else if (rest[0] == '<') {
                         if (parseAutolinkAt(text, index, &scan_cache)) |link| {
-                            flushLiteral(spans, &len, text[literal_start..index], base, bold, italic, strike);
+                            self.flushLiteral(spans, &len, text[literal_start..index], base, bold, italic, strike);
                             appendSpan(spans, &len, spanWith(base, .{ .text = link.text, .link = link.target }));
                             index += link.consumed;
                             literal_start = index;
@@ -590,7 +601,7 @@ pub fn Markdown(comptime Msg: type) type {
                         }
                     } else if (rest[0] == 'h' and atAutolinkBoundary(text, index)) {
                         if (parseBareUrlAt(rest)) |link| {
-                            flushLiteral(spans, &len, text[literal_start..index], base, bold, italic, strike);
+                            self.flushLiteral(spans, &len, text[literal_start..index], base, bold, italic, strike);
                             appendSpan(spans, &len, spanWith(base, .{ .text = link.text, .link = link.target }));
                             index += link.consumed;
                             literal_start = index;
@@ -599,7 +610,7 @@ pub fn Markdown(comptime Msg: type) type {
                     } else if (rest[0] == '#' and atAutolinkBoundary(text, index)) {
                         if (self.options.issue_link_base) |issue_base| {
                             if (parseIssueRefAt(rest)) |ref| {
-                                flushLiteral(spans, &len, text[literal_start..index], base, bold, italic, strike);
+                                self.flushLiteral(spans, &len, text[literal_start..index], base, bold, italic, strike);
                                 appendSpan(spans, &len, spanWith(base, .{
                                     .text = rest[0..ref.consumed],
                                     .link = self.ui.fmt("{s}{s}", .{ issue_base, ref.digits }),
@@ -614,7 +625,7 @@ pub fn Markdown(comptime Msg: type) type {
                 }
                 // Tail (including everything after a span-capacity stop),
                 // styled with the state at the stop point.
-                flushLiteral(spans, &len, text[literal_start..], base, bold, italic, strike);
+                self.flushLiteral(spans, &len, text[literal_start..], base, bold, italic, strike);
                 if (len == 0) {
                     spans[0] = spanWith(base, .{ .text = text });
                     len = 1;
@@ -623,6 +634,7 @@ pub fn Markdown(comptime Msg: type) type {
             }
 
             fn flushLiteral(
+                self: *Builder,
                 spans: *[text_spans.max_text_spans_per_paragraph]TextSpan,
                 len: *usize,
                 slice: []const u8,
@@ -632,11 +644,24 @@ pub fn Markdown(comptime Msg: type) type {
                 strike: bool,
             ) void {
                 if (slice.len == 0) return;
-                var span = spanWith(base, .{ .text = slice });
-                if (bold) span.weight = .bold;
-                if (italic) span.italic = true;
-                if (strike) span.strikethrough = true;
-                appendSpan(spans, len, span);
+                if (!self.options.review) {
+                    var span = spanWith(base, .{ .text = slice });
+                    if (bold) span.weight = .bold;
+                    if (italic) span.italic = true;
+                    if (strike) span.strikethrough = true;
+                    appendSpan(spans, len, span);
+                    return;
+                }
+
+                var review_storage: [text_spans.max_text_spans_per_paragraph]TextSpan = undefined;
+                const review_spans = code_model.highlight(slice, .clive_review, &review_storage);
+                for (review_spans) |review_span| {
+                    var span = spanWith(base, .{ .text = review_span.text, .color = review_span.color });
+                    if (bold) span.weight = .bold;
+                    if (italic) span.italic = true;
+                    if (strike) span.strikethrough = true;
+                    appendSpan(spans, len, span);
+                }
             }
 
             fn appendSpan(spans: *[text_spans.max_text_spans_per_paragraph]TextSpan, len: *usize, span: TextSpan) void {

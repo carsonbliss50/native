@@ -1131,7 +1131,10 @@ fn emitCodeEditorWidget(builder: *Builder, widget: Widget, tokens: DesignTokens)
     );
     const selection_range = widget_access.widgetTextSelectionRange(widget);
     const composition_range = widget_access.widgetTextCompositionRange(widget);
-    const active_row = codeEditorActiveRowRect(widget, draw_text, layout_options, selection_range);
+    const active_row = if (code_model.isProseLanguage(widget.code_language))
+        null
+    else
+        codeEditorActiveRowRect(widget, draw_text, layout_options, selection_range);
 
     try builder.pushClip(.{ .id = widgetPartId(widget.id, 16), .rect = widget.frame });
     if (active_row) |row| {

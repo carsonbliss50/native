@@ -593,7 +593,7 @@
       },
       {
         "name": "editable",
-        "doc": "code: true enables text editing while retaining syntax highlighting; pair it with on-input to apply TextInputEvent updates. Read-only by default."
+        "doc": "code: true enables text editing while retaining syntax highlighting; pair it with on-input to apply TextInputEvent updates. Read-only by default. The clive and clive-review languages use proportional document text; clive-review also colors writing issues."
       },
       {
         "name": "line-numbers",
